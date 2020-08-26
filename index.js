@@ -57,7 +57,7 @@ const Roll_Handler =  {
 
         var rollValue = Math.floor( Math.random() * 6 ) +1;
         console.log(rollValue);
-        say = "You rolled a " + rollValue;
+        say = "You rolled this number:  " + rollValue;
         
         return responseBuilder
             .speak(say)
