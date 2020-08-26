@@ -52,12 +52,51 @@ const Roll_Handler =  {
         const request = handlerInput.requestEnvelope.request;
         const responseBuilder = handlerInput.responseBuilder;
         let sessionAttributes = handlerInput.attributesManager.getSessionAttributes();
-
+        /*SESSION ATTRIBUTES
+            sessionAttributes.favoriteColor = favoriteColor;
+            handlerInput.attributesManager.setSessionAttributes(sessionAttributes);
+        */
+        
         let say = '';
+        
+        //roll the dice and get the value
+        let rollValue = Math.floor( Math.random() * 6 ) +1;
+        let prevScore = 0;
+        if ("score" in sessionAttributes)
+        {
+            prevScore = sessionAttributes["score"];
+        }
+        console.log("Session Attribs: " + JSON.stringify(sessionAttributes));
+        console.log("Roll value: " + rollValue);
+        console.log("Prev score: " + prevScore);
+        
+        //if rolled a 1
+        if (rollValue == 1)
+        {
+            //check if there is a session in the db and remove it if so
+            
+            //say: "(SFX) You have rolled a 1, which resets your score to 0.  Unlucky.  To start a brand new round say, "Roll".  To hear the high scores say, "Leaderboard"
+        }
+        else
+        {
+            //add roll value to score
+            let score = rollValue;
+            if ("score" in sessionAttributes)
+            {
+                score += sessionAttributes["score"];
+                
+            }
+            
+            sessionAttributes["score"] = score;
+            handlerInput.attributesManager.setSessionAttributes(sessionAttributes);
+            console.log("Session Attribs(POST): " + JSON.stringify(sessionAttributes));
 
-        var rollValue = Math.floor( Math.random() * 6 ) +1;
-        console.log(rollValue);
-        say = "You rolled this number:  " + rollValue;
+            //check DB if score is in highest leaderboard, announce that and add it to the leaderboard db(STRETCH)
+            
+            say = "You have rolled a " + rollValue + ", increasing your score to " + score + ".  Your old score was " + prevScore;
+            
+            //say: "(SFX) You have rolled a ${rollValue}, increasing your score to ${score}."  //POTENTIALLY ADD <audio> You have made it to the Top 10, congratulations # ${rank}
+        }
         
         return responseBuilder
             .speak(say)
@@ -76,6 +115,7 @@ const CashOut_Handler =  {
         const request = handlerInput.requestEnvelope.request;
         const responseBuilder = handlerInput.responseBuilder;
         let sessionAttributes = handlerInput.attributesManager.getSessionAttributes();
+        
 
         let say = 'Hello from CashOut. ';
 
