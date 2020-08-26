@@ -104,7 +104,7 @@ const CashOut_Handler =  {
         const responseBuilder = handlerInput.responseBuilder;
         let sessionAttributes = handlerInput.attributesManager.getSessionAttributes();
         let say = '';
-        let currentScore = GetScoreFromAttribs(sessionAttributes);
+        let currentScore = 550;// GetScoreFromAttribs(sessionAttributes);
         
         //reset attribute score to 0
         sessionAttributes["score"] = 0;
@@ -112,74 +112,77 @@ const CashOut_Handler =  {
         
         //check if made leaderboard
         let playerId = handlerInput.requestEnvelope.session.user.userId;
-        console.log("PLyaer id: " + playerId);
+        console.log("Player id: " + playerId);
         var docClient = new AWS.DynamoDB.DocumentClient({apiVersion: '2012-08-10'});
-            var params = {
-                TableName : "high-roller-leaderboard",
-                // FilterExpression: "#leaderboardScore >= :lowestScore",
-                // ExpressionAttributeNames:{
-                //     "#leaderboardScore": "score"
-                // },
-                // ExpressionAttributeValues: {
-                //     ":lowestScore": 100
-                // }
-            };
+            
             
             return new Promise((resolve, reject) => {
+                var params = {
+                    TableName : "high-roller-leaderboard",
+                };
                 docClient.scan(params, function(err, leaderboardData) {
                 if (err) {
                     console.error("Unable to query leaderboard. Error:", JSON.stringify(err, null, 2));
                     reject();
-                } else {
+                } 
+                else 
+                {
+                    let wasAddedToLeaderboard = false;
                     console.log("Query succeeded.");
+                    //there's nothing in the leaderboard
+                    if (leaderboardData.Items.length == 0)
+                    {
+                        wasAddedToLeaderboard = true;
+                        AddToLeaderboard(docClient, currentScore, playerId);
+                    }
+                    else
+                    {
+                        //sort the leaderboard to find the lowest score
+                        leaderboardData.Items.sort((a, b) => (a.score > b.score) ? 1 : -1);
+                        
+                        let lowestItem = leaderboardData.Items[0];
+                        //this score should be added to the leaderboard
+                        if (lowestItem.score <= currentScore)
+                        {
+                            wasAddedToLeaderboard = true;
+                            RemoveFromLeaderboard(docClient, lowestItem.score);
+                            AddToLeaderboard(docClient, currentScore, playerId);
+                        }
+                    }
+                    
+                    if (wasAddedToLeaderboard)
+                    {
+                        resolve(responseBuilder
+                            .speak("Congratulations you were added to the top 10 leaderboard with a score of " + currentScore + ". To start a new game you can say, Roll or Leaderboard to hear the top scores")
+                            .reprompt('try again, ' + say)
+                            .getResponse());
+                    }
+                    
+                    else
+                    {
+                        resolve(responseBuilder
+                            .speak("You cashed out with a score of " +currentScore + ".  The leaderboard starts at " + leaderboardData.Items[0].score)
+                            .reprompt('try again, ' + say)
+                            .getResponse());
+    
+                        }
+                    }
+                        
+                        
+                        
+                    
                     console.log("Items: " + JSON.stringify(leaderboardData.Items));
+                    //Minor Improvement: instead of sorting, I really only need reference to the lowest element in the leaderboard to kick it out
                     leaderboardData.Items.sort((a, b) => (a.score < b.score) ? 1 : -1)
                         leaderboardData.Items.forEach( (item) =>  
                         {
                             console.log("Leaderboard: " + item.score);
                         });
-
-                }
-                    // //there's nothing in the leaderboard
-                    // if (leaderboardData.Items.length == 0)
-                    // {
-                    //     //remove the lowest score in the leaderboard
-                        
-                    //     //add this one to the leaderboard
-                    //     say = ""
-                    //     resolve(responseBuilder
-                    //         .speak("The leaderboard is empty.")
-                    //         .reprompt('try again, ' + say)
-                    //         .getResponse()
-                    //     );
-                    // }
-                    // else
-                    // {
-                    //     leaderboardData.Items.forEach( (item) =>  
-                    //     {
-                    //         console.log("Leaderboard: " + item.score);
-                    //     });
-                    //     resolve(responseBuilder
-                    //         .speak("The leaderboard has this many entries: " + leaderboardData.Items.length)
-                    //         .reprompt('try again, ' + say)
-                    //         .getResponse());
-    
-                    //     }
-                    // }
+                  
                 });
                 
                 
             });
-            //add to leaderboard
-
-
-        // say = "Your score of " + currentScore + " has earned you a spot on the leaderboard!  Congratulations number " + rank;
-
-
-        // return responseBuilder
-        //     .speak(say)
-        //     .reprompt('try again, ' + say)
-        //     .getResponse();
     },
 };
 
@@ -202,6 +205,46 @@ const HearLeaderboard_Handler =  {
             .getResponse();
     },
 };
+
+const AddToLeaderboard = function(docClient, currentScore, playerId)
+{
+    //add this one to the leaderboard
+    let params = {
+        TableName : "high-roller-leaderboard",
+        Item: {
+            score: currentScore,
+            name: playerId
+        }
+    }
+    
+    docClient.put(params, function(err, data)
+    {
+        if (err) {
+            console.error("Unable to add score to leaderboard. Error:", JSON.stringify(err, null, 2));
+        }
+    });
+}
+
+const RemoveFromLeaderboard = function(docClient, scoreToRemove)
+{
+    //add this one to the leaderboard
+    let params = {
+        TableName : "high-roller-leaderboard",
+        Key: {
+            HashKey: scoreToRemove
+        }
+    }
+    
+    docClient.delete(params, function(err, data)
+    {
+        if (err) {
+            console.error("Unable to remove score from leaderboard. Error:", JSON.stringify(err, null, 2));
+        }
+        else{
+            console.log("Removed " + scoreToRemove +" from leaderboard");
+        }
+    });
+}
 
 const GetScoreFromAttribs = function (sessionAttributes)
 {
