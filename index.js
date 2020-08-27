@@ -4,25 +4,21 @@ const Alexa = require("ask-sdk-core");
 const AWS = require('aws-sdk');
 const https = require("https");
 
-
+const TABLE_NAME = "high-roller-leaderboard-id";
 
 const invocationName = "high roller";
 
 // Session Attributes 
-//   Alexa will track attributes for you, by default only during the lifespan of your session.
-//   The history[] array will track previous request(s), used for contextual Help/Yes/No handling.
-//   Set up DynamoDB persistence to have the skill save and reload these attributes between skill sessions.
 
 function getMemoryAttributes() {   const memoryAttributes = {
        "history":[],
 
-        // The remaining attributes will be useful after DynamoDB persistence is configured
        "launchCount":0,
        "lastUseTimestamp":0,
 
        "lastSpeechOutput":{},
-       "nextIntent":[]
-
+       "nextIntent":[],
+       "playerName": "anonymous"
        // "favoriteColor":"",
        // "name":"",
        // "namePronounce":"",
@@ -42,6 +38,60 @@ const maxHistorySize = 20; // remember only latest 20 intents
 
 
 // 1. Intent Handlers =============================================
+
+
+const SetPlayerName_Handler =  {
+    canHandle(handlerInput) {
+        const request = handlerInput.requestEnvelope.request;
+        return request.type === 'IntentRequest' && request.intent.name === 'SetPlayerName';
+            // && getPreviousIntent((handlerInput.attributesManager.getSessionAttributes() === "LaunchRequest"));
+    },
+    handle(handlerInput) {
+        const request = handlerInput.requestEnvelope.request;
+        const responseBuilder = handlerInput.responseBuilder;
+        let sessionAttributes = handlerInput.attributesManager.getSessionAttributes();
+
+        let say = '';
+
+        let slotStatus = '';
+        let resolvedSlot;
+
+        let slotValues = getSlotValues(request.intent.slots); 
+        if (slotValues.name.heardAs) {
+            sessionAttributes["playerName"] = slotValues.name.heardAs;
+            handlerInput.attributesManager.setSessionAttributes(sessionAttributes);
+            slotStatus += ' Saving your name as ' + slotValues.name.heardAs + '. The goal of this game is to roll the dice and increase your score.  When you roll a 1, your score will be dropped back down to 0. To start a brand new round say, Roll.  To hear the high scores say, Leaderboard';
+        } else {
+            slotStatus += 'slot name is empty. ';
+        }
+        if (slotValues.name.ERstatus === 'ER_SUCCESS_MATCH') {
+            slotStatus += 'a valid ';
+            if(slotValues.name.resolved !== slotValues.name.heardAs) {
+                slotStatus += 'synonym for ' + slotValues.name.resolved + '. '; 
+                } else {
+                slotStatus += 'match. '
+            } // else {
+                //
+        }
+        if (slotValues.name.ERstatus === 'ER_SUCCESS_NO_MATCH') {
+            slotStatus += 'which did not match any slot value. ';
+            console.log('***** consider adding "' + slotValues.name.heardAs + '" to the custom slot type used by slot name! '); 
+        }
+
+        if( (slotValues.name.ERstatus === 'ER_SUCCESS_NO_MATCH') ||  (!slotValues.name.heardAs) ) {
+            slotStatus += 'A few valid values are, ' + sayArray(getExampleSlotValues('SetPlayerName','name'), 'or');
+        }
+
+        say += slotStatus;
+
+
+        return responseBuilder
+            .speak(say)
+            .reprompt('try again, ' + say)
+            .getResponse();
+    },
+};
+
 
 const Roll_Handler =  {
     canHandle(handlerInput) {
@@ -87,7 +137,7 @@ const Roll_Handler =  {
         }
         
         return responseBuilder
-            .speak(say)
+            .speak("<audio src=\"soundbank://soundlibrary/rocks/throw/throw_05\"/>" + say)
             .reprompt('try again, ' + say)
             .getResponse();
     },
@@ -104,7 +154,7 @@ const CashOut_Handler =  {
         const responseBuilder = handlerInput.responseBuilder;
         let sessionAttributes = handlerInput.attributesManager.getSessionAttributes();
         let say = '';
-        let currentScore = 550;// GetScoreFromAttribs(sessionAttributes);
+        let currentScore = GetScoreFromAttribs(sessionAttributes);
         
         //reset attribute score to 0
         sessionAttributes["score"] = 0;
@@ -112,77 +162,76 @@ const CashOut_Handler =  {
         
         //check if made leaderboard
         let playerId = handlerInput.requestEnvelope.session.user.userId;
+        let playerName = sessionAttributes.playerName;
         console.log("Player id: " + playerId);
         var docClient = new AWS.DynamoDB.DocumentClient({apiVersion: '2012-08-10'});
             
             
-            return new Promise((resolve, reject) => {
-                var params = {
-                    TableName : "high-roller-leaderboard",
-                };
-                docClient.scan(params, function(err, leaderboardData) {
-                if (err) {
-                    console.error("Unable to query leaderboard. Error:", JSON.stringify(err, null, 2));
-                    reject();
-                } 
-                else 
+        return new Promise((resolve, reject) => {
+            var params = {
+                TableName : TABLE_NAME,
+            };
+            docClient.scan(params, function(err, leaderboardData) {
+            if (err) {
+                console.error("Unable to query leaderboard. Error:", JSON.stringify(err, null, 2));
+                reject();
+            } 
+            else 
+            {
+                let wasAddedToLeaderboard = false;
+                console.log("Query succeeded.");
+                leaderboardData.Items.forEach( (item) =>  
+                        {
+                            console.log("LB: " + item.score + " named " + item.playerName);
+                        });
+                        console.log("Len: " + leaderboardData.Items.length);
+                //there's nothing in the leaderboard
+                if (leaderboardData.Items.length < 10)
                 {
-                    let wasAddedToLeaderboard = false;
-                    console.log("Query succeeded.");
-                    //there's nothing in the leaderboard
-                    if (leaderboardData.Items.length == 0)
+                    wasAddedToLeaderboard = true;
+                    AddToLeaderboard(docClient, currentScore, playerId, playerName, request.requestId);
+                }
+                else
+                {
+                    //sort the leaderboard to find the lowest score
+                    leaderboardData.Items.sort((a, b) => (a.score > b.score) ? 1 : -1);
+                    leaderboardData.Items.forEach( (item) =>  
+                        {
+                            console.log("LB: " + item.score + " named " + item.playerName);
+                        });
+                    console.log("Lowest: "+ leaderboardData.Items[0]);
+                    let lowestItem = leaderboardData.Items[0];
+                    //this score should be added to the leaderboard
+                    if (lowestItem.score <= currentScore)
                     {
                         wasAddedToLeaderboard = true;
-                        AddToLeaderboard(docClient, currentScore, playerId);
+                        RemoveFromLeaderboard(docClient, lowestItem);
+                        AddToLeaderboard(docClient, currentScore, playerId, playerName, request.requestId);
                     }
-                    else
-                    {
-                        //sort the leaderboard to find the lowest score
-                        leaderboardData.Items.sort((a, b) => (a.score > b.score) ? 1 : -1);
-                        
-                        let lowestItem = leaderboardData.Items[0];
-                        //this score should be added to the leaderboard
-                        if (lowestItem.score <= currentScore)
-                        {
-                            wasAddedToLeaderboard = true;
-                            RemoveFromLeaderboard(docClient, lowestItem.score);
-                            AddToLeaderboard(docClient, currentScore, playerId);
-                        }
-                    }
-                    
-                    if (wasAddedToLeaderboard)
-                    {
-                        resolve(responseBuilder
-                            .speak("Congratulations you were added to the top 10 leaderboard with a score of " + currentScore + ". To start a new game you can say, Roll or Leaderboard to hear the top scores")
-                            .reprompt('try again, ' + say)
-                            .getResponse());
-                    }
-                    
-                    else
-                    {
-                        resolve(responseBuilder
-                            .speak("You cashed out with a score of " +currentScore + ".  The leaderboard starts at " + leaderboardData.Items[0].score)
-                            .reprompt('try again, ' + say)
-                            .getResponse());
-    
-                        }
-                    }
-                        
-                        
-                        
-                    
-                    console.log("Items: " + JSON.stringify(leaderboardData.Items));
-                    //Minor Improvement: instead of sorting, I really only need reference to the lowest element in the leaderboard to kick it out
-                    leaderboardData.Items.sort((a, b) => (a.score < b.score) ? 1 : -1)
-                        leaderboardData.Items.forEach( (item) =>  
-                        {
-                            console.log("Leaderboard: " + item.score);
-                        });
-                  
-                });
+                }
                 
+                if (wasAddedToLeaderboard)
+                {
+                    resolve(responseBuilder
+                        .speak("<audio src=\"soundbank://soundlibrary/magic_spells/magic_spells_14\"/> " + "Congratulations you were added to the top 10 leaderboard with a score of " + currentScore + ". To start a new game you can say, Roll or Leaderboard to hear the top scores")
+                        .reprompt('try again, ' + say)
+                        .getResponse());
+                }
                 
+                else
+                {
+                    resolve(responseBuilder
+                        .speak("You cashed out with a score of " +currentScore + ".  The leaderboard starts at " + leaderboardData.Items[0].score)
+                        .reprompt('try again, ' + say)
+                        .getResponse());
+
+                    }
+                }
+              
             });
+            
+            
+        });
     },
 };
 
@@ -197,23 +246,64 @@ const HearLeaderboard_Handler =  {
         let sessionAttributes = handlerInput.attributesManager.getSessionAttributes();
 
         let say = 'Hello from HearLeaderboard. ';
+        let docClient = new AWS.DynamoDB.DocumentClient({apiVersion: '2012-08-10'});
+        let playerId = handlerInput.requestEnvelope.session.user.userId;
 
 
-        return responseBuilder
-            .speak(say)
-            .reprompt('try again, ' + say)
-            .getResponse();
+        return new Promise((resolve, reject) => {
+            var params = {
+                TableName : TABLE_NAME,
+            };
+            docClient.scan(params, function(err, leaderboardData) 
+            {
+                if (err) {
+                    console.error("Unable to query leaderboard. Error:", JSON.stringify(err, null, 2));
+                    reject();
+                } 
+                else 
+                {
+                    console.log("Query succeeded.");
+                    //there's nothing in the leaderboard
+                    if (leaderboardData.Items.length == 0)
+                    {
+                        resolve(responseBuilder
+                            .speak("The top 10 leaderboard is currently empty.")
+                            .reprompt('try again, ' + say)
+                            .getResponse());
+                        return;
+                    }
+                    else
+                    {
+                        let leaderBoardList = "";
+                        //sort the leaderboard to find the lowest score
+                        leaderboardData.Items.sort((a, b) => (a.score < b.score) ? 1 : -1);
+                        leaderboardData.Items.forEach( (item) =>  
+                        {
+                            leaderBoardList += item.playerName + " with " + item.score + " points. ";
+                        });
+                        
+                        resolve(responseBuilder
+                            .speak("The leaderboard currently looks like this. " + leaderBoardList)
+                            .reprompt('try again, ' + say)
+                            .getResponse());
+                        
+                    }
+                }
+            });
+            
+        });
     },
 };
 
-const AddToLeaderboard = function(docClient, currentScore, playerId)
+const AddToLeaderboard = function(docClient, currentScore, playerId, playerName, requestId)
 {
     //add this one to the leaderboard
     let params = {
-        TableName : "high-roller-leaderboard",
+        TableName : TABLE_NAME,
         Item: {
             score: currentScore,
-            name: playerId
+            playerId: playerId+requestId,
+            playerName: playerName
         }
     }
     
@@ -225,13 +315,15 @@ const AddToLeaderboard = function(docClient, currentScore, playerId)
     });
 }
 
-const RemoveFromLeaderboard = function(docClient, scoreToRemove)
+const RemoveFromLeaderboard = function(docClient, entryToRemove)
 {
+    console.log("removing: " + JSON.stringify(entryToRemove));
     //add this one to the leaderboard
     let params = {
-        TableName : "high-roller-leaderboard",
+        TableName : TABLE_NAME,
         Key: {
-            HashKey: scoreToRemove
+            
+            playerId: entryToRemove.playerId
         }
     }
     
@@ -239,9 +331,6 @@ const RemoveFromLeaderboard = function(docClient, scoreToRemove)
     {
         if (err) {
             console.error("Unable to remove score from leaderboard. Error:", JSON.stringify(err, null, 2));
-        }
-        else{
-            console.log("Removed " + scoreToRemove +" from leaderboard");
         }
     });
 }
@@ -290,15 +379,8 @@ const AMAZON_HelpIntent_Handler =  {
         let intents = getCustomIntents();
         let sampleIntent = randomElement(intents);
 
-        let say = 'You asked for help. '; 
-
-        // let previousIntent = getPreviousIntent(sessionAttributes);
-        // if (previousIntent && !handlerInput.requestEnvelope.session.new) {
-        //     say += 'Your last intent was ' + previousIntent + '. ';
-        // }
-        // say +=  'I understand  ' + intents.length + ' intents, '
-
-        say += ' Here something you can ask me, ' + getSampleUtterance(sampleIntent);
+        let say = 'Say Set name, followed by your name to set your name.  Say Leaderboard to hear the top 10 scores.  Say '
+        + 'Roll to contnue rolling, or say Cash Out to submit your score to the leaderboards.'; 
 
         return responseBuilder
             .speak(say)
@@ -357,7 +439,7 @@ const LaunchRequest_Handler =  {
     handle(handlerInput) {
         const responseBuilder = handlerInput.responseBuilder;
 
-        let say = 'hello' + ' and welcome to ' + invocationName + ' ! Say help to hear some options.';
+        let say = 'hello' + ' and welcome to ' + invocationName + ' ! The get started, tell me your name, or say, anonymous.';
 
         let skillTitle = capitalize(invocationName);
 
@@ -787,6 +869,7 @@ exports.handler = skillBuilder
         AMAZON_NavigateHomeIntent_Handler, 
         CashOut_Handler, 
         HearLeaderboard_Handler, 
+        SetPlayerName_Handler, 
         LaunchRequest_Handler, 
         SessionEndedHandler
     )
@@ -858,6 +941,18 @@ const model = {
             "what is the leaderboard",
             "what's the leaderboard",
             "leaderboard"
+          ]
+        },
+        {
+          "name": "SetPlayerName",
+          "slots": [
+            {
+              "name": "name",
+              "type": "AMAZON.FirstName"
+            }
+          ],
+          "samples": [
+            "my name is {name}"
           ]
         },
         {
